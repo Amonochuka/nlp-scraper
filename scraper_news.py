@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 # ------------------------------------------------------------
 # Configuration (change these if you want a different source)
 # ------------------------------------------------------------
-DEFAULT_FEED_URL = "https://feeds.bbci.co.uk/news/rss.xml"
+DEFAULT_FEED_URL = "https://rss.cnn.com/rss/edition.rss"
 DATA_DIR = "data"
 ARTICLES_FILE = os.path.join(DATA_DIR, "articles.jsonl")
 MAX_ARTICLES = 300
@@ -104,7 +104,7 @@ def run_scraper(feed_url: str = DEFAULT_FEED_URL) -> None:
         print(f"Error fetching RSS feed: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    soup = BeautifulSoup(resp.text, "xml")
+    soup = BeautifulSoup(resp.text, "html5lib")
     items = soup.find_all("item")
 
     saved = 0
