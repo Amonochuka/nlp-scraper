@@ -15,6 +15,7 @@ import sys
 import csv
 import uuid
 from typing import List, Dict, Any
+import joblib
 
 import spacy
 from collections import Counter
@@ -80,22 +81,44 @@ def extract_orgs(headline: str, body: str) -> List[str]:
 
 
 # ------------------------------------------------------------
-# Helper: lightweight topic heuristic (placeholder)
+# Helper: topic classification using trained model
 # ------------------------------------------------------------
+import joblib
+import nltk
+
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+
+CLASSIFIER_PATH = os.path.join(RESULTS_DIR, "topic_classifier.pkl")
+CLASSIFIER = joblib.load(CLASSIFIER_PATH) if os.path.exists(CLASSIFIER_PATH) else None
+CATEGORY_NAMES = ["business", "entertainment", "politics", "sport", "tech"]
+
+
 def classify_topic(headline: str, body: str) -> str:
-    """Very naive topic keyword mapping – replace with real classifier later."""
-    text = f"{headline} {body}".lower()
-    if any(word in text for word in ["election", "vote", "parliament", "policy", "minister"]):
-        return "Politics"
-    if any(word in text for word in ["sport", "football", "game", "match", "olympic"]):
-        return "Sport"
-    if any(word in text for word in ["tech", "ai", "software", "digital", " silicon"]):
-        return "Tech"
-    if any(word in text for word in ["entertainment", "oscars", "movie", "celebrity", "music"]):
-        return "Entertainment"
-    if any(word in text for word in ["business", "earnings", "profit", "ceo", "market"]):
-        return "Business"
-    return "Other"
+    """Classify article topic using trained MultinomialNB model."""
+    if CLASSIFIER is None:
+        return "Other"
+    text = f"{headline} {body}"
+    # Preprocess same as training: lowercase, simple tokenization
+    import re
+    from nltk.corpus import stopwords as nltk_stopwords
+    from nltk.stem import WordNetLemmatizer
+    
+    # Minimal preprocessing
+    text = text.lower()
+    tokens = re.findall(r'\b[a-z]+\b', text)
+    stop_words = set(nltk_stopwords.words('english'))
+    lemmatizer = WordNetLemmatizer()
+    tokens = [lemmatizer.lemmatize(t) for t in tokens if t not in stop_words and len(t) > 3]
+    text_clean = ' '.join(tokens)
+    
+    # Vectorize and predict
+    try:
+        X_vec = CLASSIFIER["vectorizer"].transform([text_clean])
+        pred = CLASSIFIER["classifier"].predict(X_vec)[0]
+        return CATEGORY_NAMES[pred] if 0 <= pred < len(CATEGORY_NAMES) else "Other"
+    except Exception:
+        return "Other"
 
 
 # ------------------------------------------------------------
