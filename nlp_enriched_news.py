@@ -2,9 +2,9 @@
 
 Processes scraped news articles through:
 1. Entity detection using SpaCy NER
-2. Topic classification using a lightweight heuristic (placeholder)
-3. Sentiment analysis using a pre-trained VADER model (placeholder)
-4. Scandal detection using word embeddings (placeholder)
+2. Topic classification using a trained model
+3. Sentiment analysis using a pre-trained VADER model
+4. Scandal detection using word embeddings + distance
 
 Outputs enriched DataFrame saved to enhanced_news.csv.
 """
@@ -16,6 +16,10 @@ import csv
 import uuid
 from typing import List, Dict, Any
 import joblib
+import nltk
+
+nltk.download('vader_lexicon', quiet=True)
+from nltk.sentiment import SentimentIntensityAnalyzer
 
 import spacy
 from collections import Counter
@@ -33,7 +37,6 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # Load SpaCy model (en_core_web_sm must be available)
 nlp = spacy.load("en_core_web_sm")
-
 
 # ------------------------------------------------------------
 # Helper: extract ORG entities from headline + body
@@ -83,15 +86,15 @@ def extract_orgs(headline: str, body: str) -> List[str]:
 # ------------------------------------------------------------
 # Helper: topic classification using trained model
 # ------------------------------------------------------------
-import joblib
-import nltk
-
-nltk.download('stopwords', quiet=True)
-nltk.download('wordnet', quiet=True)
-
 CLASSIFIER_PATH = os.path.join(RESULTS_DIR, "topic_classifier.pkl")
 CLASSIFIER = joblib.load(CLASSIFIER_PATH) if os.path.exists(CLASSIFIER_PATH) else None
 CATEGORY_NAMES = ["business", "entertainment", "politics", "sport", "tech"]
+
+import nltk
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+from nltk.corpus import stopwords as nltk_stopwords
+from nltk.stem import WordNetLemmatizer
 
 
 def classify_topic(headline: str, body: str) -> str:
@@ -101,8 +104,6 @@ def classify_topic(headline: str, body: str) -> str:
     text = f"{headline} {body}"
     # Preprocess same as training: lowercase, simple tokenization
     import re
-    from nltk.corpus import stopwords as nltk_stopwords
-    from nltk.stem import WordNetLemmatizer
     
     # Minimal preprocessing
     text = text.lower()
@@ -122,22 +123,116 @@ def classify_topic(headline: str, body: str) -> str:
 
 
 # ------------------------------------------------------------
-# Helper: sentiment placeholder (VADER would go here)
+# Helper: sentiment analysis using pre-trained VADER
 # ------------------------------------------------------------
 def analyze_sentiment(headline: str, body: str) -> List[float]:
-    """Return [pos, neg, neu] scores. In a full implementation VADER would be used."""
-    # Dummy balanced sentiment for now
-    return [0.0, 0.0, 0.0]
+    """Return [compound, pos, neg, neu] scores using VADER sentiment analyzer."""
+    sid = SentimentIntensityAnalyzer()
+    text = f"{headline} {body}"
+    scores = sid.polarity_scores(text)
+    # Return as [compound, pos, neg, neu] for CSV consistency
+    return [scores["compound"], scores["pos"], scores["neg"], scores["neu"]]
 
 
 # ------------------------------------------------------------
-# Helper: scandal detection placeholder
+# Helper: scandal detection using word embeddings + distance
 # ------------------------------------------------------------
-def flag_scandal(headline: str, body: str, orgs: List[str]) -> Dict[str, Any]:
-    """Return a dict with Scandal_distance and Top_10 flag (placeholder values)."""
-    # In the real pipeline we would compute embeddings + distances here.
-    # For now return zero distance and no flag.
-    return {"Scandal_distance": 0.0, "Top_10": False, "entities": orgs}
+KEYWORD_SET = {"pollution", "deforestation", "contamination", "spill", "emission", "toxic waste"}
+
+def compute_scandal_distance(headline: str, body: str) -> float:
+    """Compute scandal distance for a single article.
+    
+    For each sentence containing an ORG entity, compute distance to keyword vectors.
+    Aggregate per-article: mean of k=2 closest distances across all qualifying sentences.
+    Smaller distance = more suspicious (closer to environmental scandal keywords).
+    
+    Returns:
+        float: The aggregated scandal distance (smaller = more suspicious)
+    """
+    text = f"{headline} {body}"
+    doc = nlp(text)
+    
+    # Compute keyword embeddings (SpaCy word vectors)
+    keyword_embeddings = {}
+    for kw in KEYWORD_SET:
+        kw_doc = nlp(kw)
+        if kw_doc.has_vector and kw_doc.vector_norm > 0:
+            keyword_embeddings[kw] = kw_doc.vector
+        else:
+            # Fallback: use first non-stop token vector
+            tokens = [t for t in kw_doc if not t.is_stop]
+            if tokens:
+                keyword_embeddings[kw] = tokens[0].vector
+            else:
+                keyword_embeddings[kw] = None
+    
+    # Collect distances from all sentences with ORG entities
+    article_distances = []
+    
+    for sent in doc.sents:
+        # Check if sentence contains ORG entities
+        sent_orgs = [ent for ent in sent.ents if ent.label_ == "ORG"]
+        if not sent_orgs:
+            continue
+        
+        # Get sentence embedding (average of token vectors)
+        token_vectors = [tok.vector for tok in sent if tok.has_vector]
+        if not token_vectors:
+            continue
+        sent_emb = sum(token_vectors) / len(token_vectors)
+        
+        # Compute distance to each keyword
+        distances = []
+        for kw, kw_emb in keyword_embeddings.items():
+            if kw_emb is None:
+                continue
+            try:
+                # Euclidean distance between sentence and keyword vectors
+                dist = sum((a - b) ** 2 for a, b in zip(sent_emb, kw_emb)) ** 0.5
+                distances.append(dist)
+            except:
+                continue
+        
+        if distances:
+            # Use mean of k=2 closest distances
+            distances_sorted = sorted(distances)
+            k = min(2, len(distances_sorted))
+            k_closest_mean = sum(distances_sorted[:k]) / k
+            article_distances.append(k_closest_mean)
+    
+    if article_distances:
+        # Return the minimum distance across all sentences (most suspicious)
+        return min(article_distances)
+    return 999.0  # default: large distance if no relevant content found (rank at bottom)
+
+
+def flag_scandal_articles(distances: List[float]) -> List[Dict[str, Any]]:
+    """Flag top 10 articles by scandal distance.
+    
+    Args:
+        distances: List of scandal distances for all articles
+        
+    Returns:
+        List of dicts with Scandal_distance and Top_10 flag per article
+    """
+    if not distances:
+        return [{"Scandal_distance": 1.0, "Top_10": False}]
+    
+    # Sort indices by distance (smallest = most suspicious first)
+    sorted_indices = sorted(range(len(distances)), key=lambda i: distances[i])
+    
+    # Flag top 10: the 10 articles with smallest distances
+    top_k = min(10, len(distances))
+    threshold = distances[sorted_indices[top_k - 1]] if top_k > 0 else 1.0
+    
+    results = []
+    for i, dist in enumerate(distances):
+        top_10 = dist <= threshold
+        results.append({
+            "Scandal_distance": dist,
+            "Top_10": top_10
+        })
+    return results
 
 
 # ------------------------------------------------------------
@@ -160,6 +255,24 @@ def run_pipeline() -> None:
     total = len(articles)
     print(f"Running NLP enrichment pipeline over {total} articles...\n")
 
+    # Step 1: Compute all scandal distances first
+    all_distances = []
+    print("Phase 5: Computing scandal distances for all articles...")
+    for idx, article in enumerate(articles, start=1):
+        uid = article.get("unique_id", str(uuid.uuid4()))
+        url = article.get("url", "")
+        date = article.get("date", "")
+        headline = article.get("headline", "")
+        body = article.get("body", "")
+        
+        dist = compute_scandal_distance(headline, body)
+        all_distances.append(dist)
+        if idx % 50 == 0 or idx == total:
+            print(f"  Processed {idx}/{total} distances...")
+    
+    # Flag top 10 articles
+    scandal_results = flag_scandal_articles(all_distances)
+    
     # Prepare rows for CSV
     rows = []
 
@@ -200,10 +313,14 @@ def run_pipeline() -> None:
         print(f"The article {headline} has a {sentiment_str} sentiment")
 
         # ---- 4. Scandal detection ----
-        scandal_info = flag_scandal(headline, body, orgs)
+        # Get this article's scandal distance
+        article_dist = all_distances[idx - 1]
+        # Get the flag result for this article
+        # Find the matching result (by position - same order as articles)
+        scandal_info = scandal_results[idx - 1]
         scandal_distance = scandal_info["Scandal_distance"]
         top_10 = scandal_info["Top_10"]
-        # Print scandal line
+        
         print("---------- Scandal detection ----------")
         print("Computing embeddings and distance ...")
         # If a scandal entity was found, mention it; otherwise generic
