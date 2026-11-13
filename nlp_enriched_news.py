@@ -38,19 +38,45 @@ nlp = spacy.load("en_core_web_sm")
 # Helper: extract ORG entities from headline + body
 # ------------------------------------------------------------
 def extract_orgs(headline: str, body: str) -> List[str]:
-    """Return a list of unique ORG entity strings found in headline+body."""
+    """Return a list of unique ORG entity strings found in headline+body.
+
+    - Avoids product-name false positives (iPhone, Galaxy, Pixel, etc.)
+    - Deduplicates overlapping spans (keeps longest when sub-spans overlap).
+    """
     text = f"{headline} {body}"
     doc = nlp(text)
-    orgs = []
+
+    BLACKLIST = {
+        "iphone", "galaxy", "pixel", "android", "ios", "ipad",
+        "watch", "airpods", "macbook", "pro", "chrome",
+    }
+
+    candidates: List[tuple] = []  # (start, end, name)
     seen = set()
     for ent in doc.ents:
         if ent.label_ == "ORG":
-            # normalise whitespace
-            name = ent.text.strip()
-            if name and name not in seen:
-                seen.add(name)
-                orgs.append(name)
-    return orgs
+            name = ent.text.strip().lower()
+            if not name or name in seen:
+                continue
+            # Skip product names
+            if name in BLACKLIST:
+                continue
+            candidates.append((ent.start_char, ent.end_char, name))
+            seen.add(name)
+
+    # Deduplicate: keep only the longest span when sub-spans overlap
+    # Sort by length (longest first), then by start position
+    candidates.sort(key=lambda x: (-(x[1] - x[0]), x[0]))
+
+    kept: List[str] = []
+    covered: List[tuple] = []  # (start, end) of kept spans
+    for start, end, name in candidates:
+        overlap = any(s <= start < e or s < end <= e or (s <= start and end <= e) for s, e in covered)
+        if not overlap:
+            kept.append(name)
+            covered.append((start, end))
+
+    return kept
 
 
 # ------------------------------------------------------------
