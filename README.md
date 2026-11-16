@@ -1,73 +1,80 @@
 # NLP-Enriched News Intelligence Platform
 
-Project to build an NLP-enriched News Intelligence platform that reads scraped news articles, identifies companies mentioned, classifies each article's topic, gauges its sentiment, and flags articles that may describe an environmental scandal involving those companies.
+NLP-enriched News Intelligence platform that scrapes news articles, detects mentioned organizations, classifies topic, scores sentiment, and flags articles most likely related to environmental scandals.
 
 ## Project Structure
 
-- `scraper_news.py` - Fetches and stores news articles from RSS feeds
-- `nlp_enriched_news.py` - Main NLP pipeline for entity detection, topic classification, sentiment analysis, and scandal detection
-- `data/` - Scraped news articles stored in JSON format
-- `results/` - NLP pipeline outputs including trained models, CSV outputs, and learning curves
+- `scraper_news.py` - Scrapes recent articles from multiple RSS feeds (BBC and The Guardian), fetches article pages for full body text, de-duplicates by URL, and stores records in JSONL.
+- `nlp_enriched_news.py` - NLP enrichment pipeline: ORG entity detection, topic classification, sentiment analysis, and scandal detection.
+- `results/training_model.py` - Trains the BBC News topic classifier and generates learning curves.
+- `data/articles.jsonl` - Scraped articles (`unique_id`, `url`, `date`, `headline`, `body`), last 7 days, 300+ articles.
+- `results/topic_classifier.pkl` - Trained topic classifier (TF-IDF + MultinomialNB).
+- `results/learning_curves.png` - Training/validation learning curves.
+- `results/enhanced_news.csv` - Enriched output for all scraped articles.
 
 ## Deliverables
 
-- At least 300 news articles scraped and stored
-- NLP enrichment pipeline processing all articles
-- `enhanced_news.csv` with entity, topic, sentiment and scandal detection results
-- Trained topic classifier with learning curves proving no overfitting
+- `python3 scraper_news.py` scrapes and stores ≥300 recent articles with per-URL progress (`requesting/parsing/saved`).
+- `python3 nlp_enriched_news.py` enriches stored articles and writes `results/enhanced_news.csv`.
+- `enhanced_news.csv` columns: `Unique ID`, `URL`, `Date scraped`, `Headline`, `Body`, `Org`, `Topics`, `Sentiment`, `Scandal_distance`, `Top_10`.
 
-## Model Choices Summary
+## Scraper Details
 
-### Topic Classifier
-- **Algorithm**: Multinomial Naive Bayes (MultinomialNB)
-- **Dataset**: BBC News dataset (2225 articles, 5 categories: business, entertainment, politics, sport, tech)
-- **Features**: TF-IDF vectorization with max 5000 features, unigrams & bigrams
-- **Preprocessing**: Lowercasing, NLTK stopword removal, WordNet lemmatization
-- **Pre-trained model**: Saved as `results/topic_classifier.pkl` (includes fitted vectorizer + classifier)
-- **Test accuracy**: 97.5% on held-out test set (exceeds >95% target)
-- **Learning curves**: Plot demonstrates no overfitting (small gap between training and validation curves, both rising as training size increases)
-- **Why this model**: Lightweight, fast inference, works well with high-dimensional text data (TF-IDF), no overfitting observed
+- **Sources**: Multiple RSS feeds from BBC News and The Guardian sections to collect enough unique recent articles.
+- **Storage**: `data/articles.jsonl` (one JSON record per line).
+- **Filtering**: Keeps articles within the last 7 days and skips duplicate URLs.
+- **Body extraction**: Fetches each article URL and extracts main text (with fallback to RSS description) so records include meaningful `body` content.
 
-### Sentiment Analysis
-- **Algorithm**: VADER (Valence Aware Dictionary and sEntiment Reasoner)
-- **Lexicon**: Pre-trained ~7,500 word sentiment lexicon from nltk
-- **Scores**: [compound, pos, neg, neu] ranging from -1 to +1 (compound) and 0 to 1 (individual scores)
-- **Pre-trained model**: Downloaded via `nltk.download('vader_lexicon')`, no training required
-- **Why this model**: Zero labelling cost, fast inference, specifically designed for text with social media characteristics, works adequately on formal news; limitation: tuned on social media text, may not capture all formal news nuances
+## NLP Pipeline
 
-### Entity Detection (NER)
-- **Model**: SpaCy `en_core_web_sm`
-- **Entity type**: ORG (organizations)
-- **Post-processing**: 
-  - Blacklist of product-name false positives: iPhone, Galaxy, Pixel, Android, iPad, watch, AirPods, MacBook, pro, Chrome
-  - Deduplication: keeps longest ORG span when sub-spans overlap
-- **Why this model**: Small, fast, good enough ORG detection for news articles; product blacklist improves accuracy by filtering common consumer product names that SpaCy sometimes tags as organizations
+### 1. Entity Detection
+- **Model**: SpaCy `en_core_web_sm` NER
+- **Target**: `ORG` entities from headline + body
+- **Post-processing**: blacklist common product-name false positives (e.g. iPhone, Galaxy, Pixel, Android) and remove overlapping duplicate spans (keep longest)
 
-### Scandal Detection
-- **Method**: Word embedding distance computation
-- **Keywords**: pollution, deforestation, contamination, spill, emission, toxic waste (6 unambiguous environmental keywords)
-- **Excluded**: fire, flood, drought (natural disaster words to avoid false positives)
-- **Distance metric**: Euclidean distance between SpaCy word vectors (300-dimensional)
-- **Aggregation**: For each sentence with ORG entity, compute mean of k=2 closest keyword distances; aggregate across sentences: minimum mean distance
-- **Top 10 flagging**: Articles ranked by Scandal_distance (smallest = most suspicious), exactly top 10 flagged as Top_10=True
-- **Why this approach**: Unsupervised, no labelled training data needed; keyword-based approach is transparent and controllable; limitation: depends on keyword selection and SpaCy vector quality
+### 2. Topic Detection
+- **Dataset**: BBC News dataset (5 classes: business, entertainment, politics, sport, tech)
+- **Preprocessing**: lowercasing, tokenization, stopword removal, lemmatization
+- **Features**: TF-IDF (`max_features=5000`, unigrams+bigrams)
+- **Model**: Multinomial Naive Bayes (`MultinomialNB`)
+- **Artifacts**: `results/topic_classifier.pkl`, `results/learning_curves.png`
+- **Performance**: ~97.5% test accuracy on held-out split; learning curves show no overfitting
+
+### 3. Sentiment Analysis
+- **Model**: NLTK VADER (`vader_lexicon`, pre-trained)
+- **Output**: `[compound, pos, neg, neu]` scores per article
+- **Rationale**: no labeled sentiment dataset required and fast inference; limitation is reduced nuance on formal/news text compared to domain-specific models
+
+### 4. Scandal Detection
+- **Keywords**: `pollution`, `deforestation`, `contamination`, `spill`, `emission`, `toxic waste` (unambiguous environmental terms; excludes natural-disaster-only terms like fire/flood/drought)
+- **Embeddings**: SpaCy token vectors (`en_core_web_sm`) for sentence and keyword representations
+- **Distance**: Euclidean distance between sentence and keyword vectors
+- **Aggregation**: for each sentence containing an ORG entity, take mean of the 2 closest keyword distances; per article use the minimum of these sentence scores (`999.0` if no qualifying sentence)
+- **Top 10**: exactly 10 articles with smallest `Scandal_distance` are flagged `Top_10=True` (deterministic tie-break by original index)
 
 ## How to Run
 
-1. **Run the scraper** to collect 300+ articles:
+```bash
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+python -c "import nltk; nltk.download('vader_lexicon'); nltk.download('stopwords'); nltk.download('wordnet')"
+```
+
+1. Scrape articles:
    ```bash
    python3 scraper_news.py
    ```
-
-2. **Run the NLP pipeline**:
+2. Run NLP enrichment:
    ```bash
    python3 nlp_enriched_news.py
    ```
+3. (Optional) Retrain topic model / regenerate learning curves:
+   ```bash
+   python3 results/training_model.py
+   ```
 
-3. **Output**: Enriched data written to `results/enhanced_news.csv`
-   - CSV columns: Unique ID, URL, Date scraped, Headline, Body, Org, Topics, Sentiment, Scandal_distance, Top_10
+## Notes / Limitations
 
-4. **Results located in**:
-   - `results/topic_classifier.pkl` - Trained topic classification model
-   - `results/learning_curves.png` - Learning curves showing no overfitting
-   - `results/enhanced_news.csv` - Pipeline output with all enrichment results
+- RSS feeds and article pages can change structure/availability; scraper includes fallbacks and URL de-duplication.
+- VADER is a general pre-trained sentiment model and may miss domain-specific nuance in news.
+- Scandal detection is keyword/embedding-distance based (unsupervised heuristic), so it can produce false positives/negatives depending on wording and entity context.
