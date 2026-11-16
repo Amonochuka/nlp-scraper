@@ -208,29 +208,26 @@ def compute_scandal_distance(headline: str, body: str) -> float:
 
 def flag_scandal_articles(distances: List[float]) -> List[Dict[str, Any]]:
     """Flag top 10 articles by scandal distance.
-    
+
     Args:
         distances: List of scandal distances for all articles
-        
+
     Returns:
         List of dicts with Scandal_distance and Top_10 flag per article
     """
     if not distances:
-        return [{"Scandal_distance": 1.0, "Top_10": False}]
-    
-    # Sort indices by distance (smallest = most suspicious first)
-    sorted_indices = sorted(range(len(distances)), key=lambda i: distances[i])
-    
-    # Flag top 10: the 10 articles with smallest distances
+        return []
+
+    # Sort indices by distance (smallest = most suspicious first), deterministic tiebreak
+    sorted_indices = sorted(range(len(distances)), key=lambda i: (distances[i], i))
     top_k = min(10, len(distances))
-    threshold = distances[sorted_indices[top_k - 1]] if top_k > 0 else 1.0
-    
+    top_set = set(sorted_indices[:top_k])
+
     results = []
     for i, dist in enumerate(distances):
-        top_10 = dist <= threshold
         results.append({
             "Scandal_distance": dist,
-            "Top_10": top_10
+            "Top_10": i in top_set
         })
     return results
 
@@ -300,30 +297,25 @@ def run_pipeline() -> None:
 
         # ---- 2. Topic detection ----
         topic = classify_topic(headline, body)
+        topics = [topic] if topic else []
         print("---------- Topic detection ----------")
         print("Text preprocessing ...")
         print(f"The topic of the article is: {topic}")
 
         # ---- 3. Sentiment analysis ----
         sentiment_scores = analyze_sentiment(headline, body)
-        # Format: list float or float – we output as list for consistency
         sentiment_str = " ".join(f"{s:.2f}" for s in sentiment_scores)
         print("---------- Sentiment analysis ----------")
         print(f"Text preprocessing ... (optional)")
         print(f"The article {headline} has a {sentiment_str} sentiment")
 
         # ---- 4. Scandal detection ----
-        # Get this article's scandal distance
-        article_dist = all_distances[idx - 1]
-        # Get the flag result for this article
-        # Find the matching result (by position - same order as articles)
         scandal_info = scandal_results[idx - 1]
         scandal_distance = scandal_info["Scandal_distance"]
         top_10 = scandal_info["Top_10"]
-        
+
         print("---------- Scandal detection ----------")
         print("Computing embeddings and distance ...")
-        # If a scandal entity was found, mention it; otherwise generic
         if orgs:
             print(f"Environmental scandal detected for {orgs[0]}")
         else:
@@ -336,9 +328,9 @@ def run_pipeline() -> None:
             "Date scraped": date,
             "Headline": headline,
             "Body": body,
-            "Org": org_str,
-            "Topics": topic,
-            "Sentiment": str(sentiment_scores),  # store as string representation
+            "Org": str(orgs),
+            "Topics": str(topics),
+            "Sentiment": str(sentiment_scores),
             "Scandal_distance": scandal_distance,
             "Top_10": top_10,
         }
